@@ -146,6 +146,12 @@
     .file-item button:hover { opacity: 0.75; }
     .btn-play { background: var(--accent); color: #fff; }
 
+    .btn-pause {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border) !important;
+    }
+    
     .btn-delete {
       background: transparent;
       color: var(--muted);
@@ -249,6 +255,7 @@
           item.innerHTML = `
             <span class="name" title="${filename}">${filename}</span>
             <button class="btn-play" onclick="playFile('${filename}')">Play</button>
+            <button class="btn-pause" onclick="pauseFile()">Pause</button>
             <button class="btn-delete" onclick="deleteFile('${filename}', this)">Delete</button>
           `;
           fileList.appendChild(item);
@@ -257,10 +264,89 @@
         fileList.innerHTML = '<p class="empty-state">Could not load files.</p>';
       }
     }
+        
+    let audioCtx = null;
+    let analyser = null;
+    let source = null;
 
-    function playFile(filename) {
-      console.log('Playing:', filename);
-      setStatus(`Selected: ${filename}`, 'success');
+    async function playFile(filename) {
+    // stop any currently playing audio
+    if (source) {
+        source.stop();
+        source = null;
+    }
+
+    setStatus(`Loading: ${filename}`, '');
+
+    // 1. create AudioContext (has to be created after a user gesture, which the click satisfies)
+    if (!audioCtx) {
+        audioCtx = new AudioContext();
+    }
+
+    // 2. fetch the MP3 as raw bytes
+    const res = await fetch(`/audiofiles/${encodeURIComponent(filename)}`);
+    const arrayBuffer = await res.arrayBuffer();
+
+    // 3. decode MP3 → raw PCM (this is the actual decoding step)
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+    console.log(`Decoded: ${audioBuffer.numberOfChannels} channels, ${audioBuffer.sampleRate}Hz, ${audioBuffer.duration.toFixed(2)}s`);
+
+    // 4. create analyser node (FFT lives here)
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;  // gives 1024 frequency bins
+
+    // 5. wire: source → analyser → speakers
+    source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(analyser);
+    analyser.connect(audioCtx.destination);
+
+    // 6. play
+    source.start(0);
+    setStatus(`Playing: ${filename}`, 'success');
+
+    // 7. start reading frequency data every frame
+    readFrequencies();
+    }
+
+    function readFrequencies() {
+    if (!analyser) return;
+
+    const bufferLength = analyser.frequencyBinCount;  // always fftSize / 2 = 1024
+    const dataArray = new Uint8Array(bufferLength);   // values 0-255 per bin
+
+    function tick() {
+        analyser.getByteFrequencyData(dataArray);  // fills dataArray with current spectrum
+
+        // quick sanity log — remove this once you can see data
+        const bass = average(dataArray, 0, 10);
+        const mids = average(dataArray, 10, 150);
+        const highs = average(dataArray, 150, 400);
+        console.log(`bass: ${bass.toFixed(1)}  mids: ${mids.toFixed(1)}  highs: ${highs.toFixed(1)}`);
+
+        requestAnimationFrame(tick);  // ~60fps loop
+    }
+
+    tick();
+    }
+
+    function average(dataArray, start, end) {
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += dataArray[i];
+    return sum / (end - start);
+    }
+
+    function pauseFile(filename, btn){
+        if (!audioCtx) return;
+
+        if (audioCtx.state == 'running'){
+            audioCtx.suspend();
+            setStatus('Paused', '');
+        } else if (audioCtx.state == 'suspended'){
+            audioCtx.resume();
+            setStatus('Resumed', '');
+        }
     }
 
     async function deleteFile(filename, btn) {
