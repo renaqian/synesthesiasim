@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Synesthesia</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #080808;
+      --surface: #111111;
+      --border: #222222;
+      --text: #e8e8e8;
+      --muted: #555555;
+      --accent: #7c6aff;
+      --accent-dim: rgba(124, 106, 255, 0.12);
+      --danger: #ff4f4f;
+      --radius: 8px;
+      --font: 'Inter', system-ui, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 24px;
+      gap: 40px;
+    }
+
+    header { text-align: center; }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 400;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    header p {
+      margin-top: 8px;
+      font-size: 0.8rem;
+      color: #333;
+      letter-spacing: 0.1em;
+    }
+
+    #dropzone {
+      width: 100%;
+      max-width: 520px;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+    }
+
+    #dropzone:hover, #dropzone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    #dropzone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    #dropzone .icon {
+      font-size: 2rem;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+
+    #dropzone p {
+      font-size: 0.85rem;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    #dropzone p span { color: var(--accent); }
+
+    #upload-status {
+      font-size: 0.8rem;
+      height: 18px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    #upload-status.success { color: #4fdb8f; }
+    #upload-status.error   { color: var(--danger); }
+
+    #library { width: 100%; max-width: 520px; }
+
+    #library h2 {
+      font-size: 0.7rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    #file-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      transition: border-color 0.15s;
+    }
+
+    .file-item:hover { border-color: #333; }
+
+    .file-item .name {
+      flex: 1;
+      font-size: 0.85rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text);
+    }
+
+    .file-item button {
+      border: none;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      padding: 5px 10px;
+      cursor: pointer;
+      font-family: var(--font);
+      transition: opacity 0.15s;
+    }
+
+    .file-item button:hover { opacity: 0.75; }
+    .btn-play { background: var(--accent); color: #fff; }
+
+    .btn-delete {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border) !important;
+    }
+
+    .btn-delete:hover {
+      color: var(--danger) !important;
+      border-color: var(--danger) !important;
+    }
+
+    .empty-state {
+      font-size: 0.8rem;
+      color: #2a2a2a;
+      text-align: center;
+      padding: 24px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Synesthesia</h1>
+    <p>sound → colour → form</p>
+  </header>
+
+  <div id="dropzone">
+    <input type="file" accept=".mp3,audio/mpeg" id="file-input" />
+    <div class="icon">♫</div>
+    <p>Drop an MP3 here<br /><span>or click to browse</span></p>
+  </div>
+
+  <div id="upload-status"></div>
+
+  <section id="library">
+    <h2>Audio Library</h2>
+    <div id="file-list"></div>
+  </section>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+    const statusEl = document.getElementById('upload-status');
+    const fileList = document.getElementById('file-list');
+
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      const file = e.dataTransfer.files[0];
+      if (file) uploadFile(file);
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+    });
+
+    async function uploadFile(file) {
+      if (!file.name.endsWith('.mp3')) {
+        setStatus('Only MP3 files are supported.', 'error');
+        return;
+      }
+
+      setStatus('Uploading…', '');
+
+      const formData = new FormData();
+      formData.append('mp3', file);
+
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        setStatus(`Uploaded: ${data.filename}`, 'success');
+        loadFiles();
+      } catch (err) {
+        setStatus(`Upload failed: ${err.message}`, 'error');
+      }
+
+      fileInput.value = '';
+    }
+
+    async function loadFiles() {
+      try {
+        const res = await fetch('/files');
+        const files = await res.json();
+
+        fileList.innerHTML = '';
+
+        if (files.length === 0) {
+          fileList.innerHTML = '<p class="empty-state">No audio files yet — upload one above.</p>';
+          return;
+        }
+
+        files.forEach(filename => {
+          const item = document.createElement('div');
+          item.className = 'file-item';
+          item.innerHTML = `
+            <span class="name" title="${filename}">${filename}</span>
+            <button class="btn-play" onclick="playFile('${filename}')">Play</button>
+            <button class="btn-delete" onclick="deleteFile('${filename}', this)">Delete</button>
+          `;
+          fileList.appendChild(item);
+        });
+      } catch (err) {
+        fileList.innerHTML = '<p class="empty-state">Could not load files.</p>';
+      }
+    }
+
+    function playFile(filename) {
+      console.log('Playing:', filename);
+      setStatus(`Selected: ${filename}`, 'success');
+    }
+
+    async function deleteFile(filename, btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/files/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Delete failed');
+        setStatus(`Deleted: ${filename}`, '');
+        loadFiles();
+      } catch (err) {
+        setStatus(err.message, 'error');
+        btn.disabled = false;
+      }
+    }
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = type;
+    }
+
+    loadFiles();
+  </script>
+
+</body>
+</html>
