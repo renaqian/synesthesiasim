@@ -151,17 +151,78 @@
     color: var(--muted);
     border: 1px solid var(--border) !important;
     }
-    
-    .btn-delete {
-      background: transparent;
-      color: var(--muted);
-      border: 1px solid var(--border) !important;
-    }
 
     .btn-delete:hover {
       color: var(--danger) !important;
       border-color: var(--danger) !important;
     }
+
+    #canvas-wrap {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    background: #000;
+    }
+    #canvas-wrap.active { display: block; }
+    #vis-canvas { width: 100%; height: 100%; display: block; }
+
+    #canvas-controls {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 12px;
+    }
+    #canvas-controls button {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #fff;
+    font-family: var(--font);
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    padding: 8px 18px;
+    border-radius: 40px;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: background 0.15s;
+    }
+    #canvas-controls button:hover { background: rgba(255,255,255,0.14); }
+
+    #now-playing {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.25);
+    white-space: nowrap;
+    }
+
+    #freq-display { width: 100%; max-width: 520px; }
+    #freq-display h2 {
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    }
+    .freq-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .freq-label { font-size: 0.75rem; color: var(--muted); width: 36px; }
+    .freq-bar-wrap { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .freq-bar { height: 100%; width: 0%; border-radius: 2px; transition: width 0.05s ease-out; }
+    #bar-bass  { background: #7c6aff; }
+    #bar-mids  { background: #4fdb8f; }
+    #bar-highs { background: #ff8c4f; }
+    .freq-value { font-size: 0.75rem; color: var(--muted); width: 28px; text-align: right; }
+        .btn-delete {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border) !important;
+        }
 
     .empty-state {
       font-size: 0.8rem;
@@ -190,6 +251,34 @@
     <h2>Audio Library</h2>
     <div id="file-list"></div>
   </section>
+
+  <section id="freq-display">
+    <h2>Frequencies</h2>
+    <div class="freq-row">
+        <span class="freq-label">Bass</span>
+        <div class="freq-bar-wrap"><div class="freq-bar" id="bar-bass"></div></div>
+        <span class="freq-value" id="val-bass">0.0</span>
+    </div>
+    <div class="freq-row">
+        <span class="freq-label">Mids</span>
+        <div class="freq-bar-wrap"><div class="freq-bar" id="bar-mids"></div></div>
+        <span class="freq-value" id="val-mids">0.0</span>
+    </div>
+    <div class="freq-row">
+        <span class="freq-label">Highs</span>
+        <div class="freq-bar-wrap"><div class="freq-bar" id="bar-highs"></div></div>
+        <span class="freq-value" id="val-highs">0.0</span>
+    </div>
+  </section>
+
+    <div id="canvas-wrap">
+    <canvas id="vis-canvas"></canvas>
+    <div id="now-playing"></div>
+    <div id="canvas-controls">
+        <button onclick="pauseFile()">Pause / Resume</button>
+        <button onclick="closeVisualizer()">Close</button>
+    </div>
+    </div>
 
   <script>
     const dropzone = document.getElementById('dropzone');
@@ -264,77 +353,259 @@
         fileList.innerHTML = '<p class="empty-state">Could not load files.</p>';
       }
     }
-        
-    let audioCtx = null;
-    let analyser = null;
-    let source = null;
+            
+    const canvasWrap = document.getElementById('canvas-wrap');
+    const canvas     = document.getElementById('vis-canvas');
+    const ctx        = canvas.getContext('2d');
+
+    let audioCtx    = null;
+    let analyser    = null;
+    let source      = null;
+    let dataArray   = null;
+    let animFrameId = null;
+
+    let prevBass      = 0;
+    let prevMids      = 0;
+    let energyHistory = new Array(60).fill(0);
+
+    let sBass      = 0;
+    let sMids      = 0;
+    let sHighs     = 0;
+    let flashAlpha = 0;
+    let shapeAngle = 0;
 
     async function playFile(filename) {
-    // stop any currently playing audio
-    if (source) {
-        source.stop();
-        source = null;
+        if (source) { source.stop(); source = null; }
+        if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+
+        setStatus(`Loading: ${filename}`, '');
+
+        if (!audioCtx) audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+
+        const res         = await fetch(`/audiofiles/${encodeURIComponent(filename)}`);
+        const arrayBuffer = await res.arrayBuffer();
+        const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+        analyser         = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        dataArray        = new Uint8Array(analyser.frequencyBinCount);
+
+        source        = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(analyser);
+        analyser.connect(audioCtx.destination);
+        source.start(0);
+
+        source.onended = () => { closeVisualizer(); setStatus('', ''); };
+
+        setStatus(`Playing: ${filename}`, 'success');
+        document.getElementById('now-playing').textContent = filename.replace('.mp3', '');
+
+        prevBass = prevMids = sBass = sMids = sHighs = flashAlpha = 0;
+        energyHistory.fill(0);
+
+        openVisualizer();
+        animFrameId = requestAnimationFrame(tick);
     }
 
-    setStatus(`Loading: ${filename}`, '');
 
-    // 1. create AudioContext (has to be created after a user gesture, which the click satisfies)
-    if (!audioCtx) {
-        audioCtx = new AudioContext();
+    function openVisualizer() {
+        resizeCanvas();
+        canvasWrap.classList.add('active');
     }
 
-    // 2. fetch the MP3 as raw bytes
-    const res = await fetch(`/audiofiles/${encodeURIComponent(filename)}`);
-    const arrayBuffer = await res.arrayBuffer();
+    function closeVisualizer() {
+        canvasWrap.classList.remove('active');
+        if (source) { try { source.stop(); } catch(e) {} source = null; }
+        if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+    }
 
-    // 3. decode MP3 → raw PCM (this is the actual decoding step)
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    function resizeCanvas() {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
 
-    console.log(`Decoded: ${audioBuffer.numberOfChannels} channels, ${audioBuffer.sampleRate}Hz, ${audioBuffer.duration.toFixed(2)}s`);
+    function avg(arr, start, end) {
+        let sum = 0;
+        for (let i = start; i < end; i++) sum += arr[i];
+        return sum / (end - start);
+    }
 
-    // 4. create analyser node (FFT lives here)
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 2048;  // gives 1024 frequency bins
+    function lerp(a, b, t) { return a + (b - a) * t; }
 
-    // 5. wire: source → analyser → speakers
-    source = audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(analyser);
-    analyser.connect(audioCtx.destination);
+    function tick() {
+        animFrameId = requestAnimationFrame(tick);
+        if (!analyser) return;
 
-    // 6. play
-    source.start(0);
-    setStatus(`Playing: ${filename}`, 'success');
+        analyser.getByteFrequencyData(dataArray);
 
-    // 7. start reading frequency data every frame
-    readFrequencies();
+        const rawBass  = avg(dataArray, 0, 10);
+        const rawMids  = avg(dataArray, 10, 150);
+        const rawHighs = avg(dataArray, 150, 400);
+
+        sBass  = lerp(sBass,  rawBass,  0.15);
+        sMids  = lerp(sMids,  rawMids,  0.12);
+        sHighs = lerp(sHighs, rawHighs, 0.2);
+
+        const bassDelta = rawBass - prevBass;
+        const midsDelta = rawMids - prevMids;
+        const isBeat    = bassDelta > 18;
+        const isMidHit  = midsDelta > 12;
+        prevBass = rawBass;
+        prevMids = rawMids;
+
+        energyHistory.push(rawBass);
+        energyHistory.shift();
+        const recentAvg = energyHistory.reduce((a, b) => a + b, 0) / energyHistory.length;
+        const isDrop    = rawBass > recentAvg * 2.2 && rawBass > 60;
+
+        if (isDrop) flashAlpha = 0.35;
+        flashAlpha = Math.max(0, flashAlpha - 0.018);
+
+        document.getElementById('bar-bass').style.width  = `${(rawBass  / 255) * 100}%`;
+        document.getElementById('bar-mids').style.width  = `${(rawMids  / 255) * 100}%`;
+        document.getElementById('bar-highs').style.width = `${(rawHighs / 255) * 100}%`;
+        document.getElementById('val-bass').textContent  = rawBass.toFixed(1);
+        document.getElementById('val-mids').textContent  = rawMids.toFixed(1);
+        document.getElementById('val-highs').textContent = rawHighs.toFixed(1);
+
+        drawBackground(sBass);
+        drawShapes(sMids, isMidHit);
+        drawLines(sHighs, rawHighs, isBeat, bassDelta);
+        drawFlash(flashAlpha, isDrop);
+        }
+
+        function drawBackground(smoothBass) {
+        const W = canvas.width;
+        const H = canvas.height;
+
+        ctx.fillStyle = 'rgba(8, 8, 8, 0.18)';
+        ctx.fillRect(0, 0, W, H);
+
+        const hue = 260 - (smoothBass / 255) * 140;
+        const sat = 40  + (smoothBass / 255) * 35;
+        const lit = 8   + (smoothBass / 255) * 10;
+
+        const grad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, W * 0.75);
+        grad.addColorStop(0,   `hsla(${hue}, ${sat}%, ${lit + 8}%, 0.55)`);
+        grad.addColorStop(0.5, `hsla(${hue - 20}, ${sat}%, ${lit}%, 0.25)`);
+        grad.addColorStop(1,   'transparent');
+
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+    }
+
+    function drawShapes(smoothMids, isMidHit) {
+        const W  = canvas.width;
+        const H  = canvas.height;
+        const cx = W / 2;
+        const cy = H / 2;
+
+        shapeAngle += 0.003 + (smoothMids / 255) * 0.012;
+
+        const sides   = Math.round(3 + (smoothMids / 255) * 5);
+        const radius  = 80 + (smoothMids / 255) * Math.min(W, H) * 0.22;
+        const distort = isMidHit ? 0.35 : 0.08;
+        const hue     = 180 + (smoothMids / 255) * 80;
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(shapeAngle);
+
+        ctx.strokeStyle = `hsla(${hue}, 70%, 65%, 0.18)`;
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        for (let i = 0; i <= sides; i++) {
+            const angle = (i / sides) * Math.PI * 2;
+            const r = radius * (1 + Math.sin(shapeAngle * 3 + i) * distort);
+            const x = Math.cos(angle) * r;
+            const y = Math.sin(angle) * r;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.strokeStyle = `hsla(${hue}, 80%, 70%, 0.55)`;
+        ctx.lineWidth   = isMidHit ? 2 : 1;
+        ctx.beginPath();
+        for (let i = 0; i <= sides; i++) {
+            const angle = (i / sides) * Math.PI * 2;
+            const r = radius * 0.55 * (1 + Math.sin(shapeAngle * 5 + i * 1.3) * distort * 0.6);
+            const x = Math.cos(angle) * r;
+            const y = Math.sin(angle) * r;
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    function drawLines(smoothHighs, rawHighs, isBeat, beatIntensity) {
+        const W  = canvas.width;
+        const H  = canvas.height;
+        const cx = W / 2;
+        const cy = H / 2;
+
+        const lineCount = isBeat
+            ? Math.floor(12 + beatIntensity * 0.8)
+            : Math.floor(4 + (smoothHighs / 255) * 8);
+
+        const len    = 60 + (smoothHighs / 255) * Math.min(W, H) * 0.35;
+        const jagged = isBeat ? 0.7 : 0.1 + (rawHighs / 255) * 0.25;
+        const hue    = 30  + (rawHighs / 255) * 60;
+        const alpha  = 0.15 + (smoothHighs / 255) * 0.55;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        for (let i = 0; i < lineCount; i++) {
+            const baseAngle = (i / lineCount) * Math.PI * 2 + shapeAngle * 0.4;
+
+            ctx.strokeStyle = `hsla(${hue + i * 8}, 85%, 70%, ${alpha})`;
+            ctx.lineWidth   = isBeat ? 1.5 : 0.8;
+            ctx.beginPath();
+
+            let x = cx;
+            let y = cy;
+            ctx.moveTo(x, y);
+
+            const segments = isBeat ? 8 : 4;
+            for (let s = 0; s < segments; s++) {
+            const jitter = (Math.random() - 0.5) * jagged * len * 0.4;
+            const segLen = len / segments;
+            x += Math.cos(baseAngle + jitter * 0.05) * segLen + (Math.random() - 0.5) * jitter;
+            y += Math.sin(baseAngle + jitter * 0.05) * segLen + (Math.random() - 0.5) * jitter;
+            ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.restore();
+    }
+
+    function drawFlash(alpha, isDrop) {
+        if (alpha <= 0) return;
+
+        const hue = isDrop ? 270 : 200;
+        ctx.fillStyle = `hsla(${hue}, 80%, 60%, ${alpha})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
     function readFrequencies() {
-    if (!analyser) return;
+        if (!analyser) return;
 
-    const bufferLength = analyser.frequencyBinCount;  // always fftSize / 2 = 1024
-    const dataArray = new Uint8Array(bufferLength);   // values 0-255 per bin
-
-    function tick() {
-        analyser.getByteFrequencyData(dataArray);  // fills dataArray with current spectrum
-
-        // quick sanity log — remove this once you can see data
-        const bass = average(dataArray, 0, 10);
-        const mids = average(dataArray, 10, 150);
-        const highs = average(dataArray, 150, 400);
-        console.log(`bass: ${bass.toFixed(1)}  mids: ${mids.toFixed(1)}  highs: ${highs.toFixed(1)}`);
-
-        requestAnimationFrame(tick);  // ~60fps loop
-    }
-
-    tick();
+        const bufferLength = analyser.frequencyBinCount;  // always fftSize / 2 = 1024
+        const dataArray = new Uint8Array(bufferLength);   // values 0-255 per bin
     }
 
     function average(dataArray, start, end) {
-    let sum = 0;
-    for (let i = start; i < end; i++) sum += dataArray[i];
-    return sum / (end - start);
+        let sum = 0;
+        for (let i = start; i < end; i++) sum += dataArray[i];
+        return sum / (end - start);
     }
 
     function pauseFile(filename, btn){
